@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Balança - diagnóstico</title>
+<style>
+  body{font-family:system-ui,sans-serif;margin:0;padding:12px;background:#fafafa;color:#111}
+  button{font-size:16px;padding:10px 14px;margin:4px 4px 4px 0;border-radius:8px;border:1px solid #888;background:#fff}
+  button.p{background:#1a73e8;color:#fff;border-color:#1a73e8}
+  #log{width:100%;height:60vh;box-sizing:border-box;font:11px/1.35 monospace;white-space:pre;overflow:auto;
+       background:#111;color:#9f9;padding:8px;border-radius:8px}
+  small{color:#555}
+</style>
+</head>
+<body>
+<h3>Balança - diagnóstico (Web Bluetooth)</h3>
+<small>Use o Chrome no Android, com o Bluetooth ligado. Feche o app OKOK antes.
+Suba na balança (descalço) para acordá-la, depois toque em Conectar.</small><br>
+<button class="p" id="btn">Conectar</button>
+<button id="adv">Ouvir anúncios</button>
+<button id="copy">Copiar log</button>
+<button id="share">Compartilhar</button>
+<button id="clear">Limpar</button>
+<div id="log"></div>
+
+<script>
+const $ = id => document.getElementById(id);
+const logEl = $('log');
+const lines = [];
+const hex = dv => [...new Uint8Array(dv.buffer, dv.byteOffset, dv.byteLength)]
+  .map(b => b.toString(16).padStart(2,'0').toUpperCase()).join(' ');
+function log(m){
+  const t = new Date().toISOString().substr(11,12);
+  const l = t + ' ' + m;
+  lines.push(l);
+  logEl.textContent = lines.join('\n');
+  logEl.scrollTop = logEl.scrollHeight;
+}
+if(!navigator.bluetooth) log('Este navegador não suporta Web Bluetooth. Use o Chrome no Android, via HTTPS.');
+if(!window.isSecureContext) log('ATENÇÃO: página fora de contexto seguro (HTTPS/localhost). O Bluetooth não vai funcionar.');
+
+// Chrome só deixa acessar serviços declarados antecipadamente; declaramos uma faixa grande.
+const u16 = n => 0x10000 + n; // helper abaixo
+function uuid16(n){ return '0000' + n.toString(16).padStart(4,'0') + '-0000-1000-8000-00805f9b34fb'; }
+const optionalServices = [];
+for(let i=0xFE00;i<=0xFFFF;i++) optionalServices.push(uuid16(i));
+[0x1800,0x1801,0x180A,0x180F,0x181B,0x181D,0x1816,0x1814].forEach(n=>optionalServices.push(uuid16(n)));
+
+let device;
+$('btn').onclick = async () => {
+  try{
+    device = await navigator.bluetooth.requestDevice({acceptAllDevices:true, optionalServices});
+    log('Dispositivo: ' + device.name + ' id=' + device.id);
+    device.addEventListener('gattserverdisconnected', () => log('Desconectado'));
+    const server = await device.gatt.connect();
+    log('Conectado ao GATT');
+    const services = await server.getPrimaryServices();
+    for(const s of services){
+      log('SERVICE ' + s.uuid);
+      let chars = [];
+      try{ chars = await s.getCharacteristics(); }catch(e){ log('  erro chars: ' + e.message); }
+      for(const c of chars){
+        const p = c.properties;
+        const props = ['read','write','writeWithoutResponse','notify','indicate'].filter(k=>p[k]).join(',');
+        log('  CHAR ' + c.uuid + ' [' + props + ']');
+        if(p.read){
+          try{ const v = await c.readValue(); log('    read: ' + hex(v)); }catch(e){}
+        }
+        if(p.notify || p.indicate){
+          try{
+            c.addEventListener('characteristicvaluechanged', ev =>
+              log('DATA ' + c.uuid.substr(4,4).toUpperCase() + ' : ' + hex(ev.target.value)));
+            await c.startNotifications();
+            log('    notificações ativas');
+          }catch(e){ log('    falha notify: ' + e.message); }
+        }
+      }
+    }
+    log('>>> Pronto. Suba na balança e aguarde os dados.');
+  }catch(e){ log('ERRO: ' + e.message); }
+};
+
+$('adv').onclick = async () => {
+  try{
+    if(!device){ log('Conecte (escolha o dispositivo) primeiro.'); return; }
+    if(!device.watchAdvertisements){
+      log('watchAdvertisements indisponível. Ative chrome://flags/#enable-experimental-web-platform-features');
+      return;
+    }
+    device.addEventListener('advertisementreceived', ev => {
+      let s = 'ADV rssi=' + ev.rssi;
+      ev.manufacturerData.forEach((v,k)=> s += ' mfr 0x' + k.toString(16) + ': ' + hex(v));
+      ev.serviceData.forEach((v,k)=> s += ' svc ' + k + ': ' + hex(v));
+      log(s);
+    });
+    await device.watchAdvertisements();
+    log('Ouvindo anúncios...');
+  }catch(e){ log('ERRO adv: ' + e.message); }
+};
+
+$('copy').onclick = async () => {
+  try{ await navigator.clipboard.writeText(lines.join('\n')); log('Log copiado'); }
+  catch(e){ log('Copiar falhou: ' + e.message); }
+};
+$('share').onclick = async () => {
+  try{ await navigator.share({title:'Log balança', text: lines.join('\n')}); }
+  catch(e){ log('Compartilhar falhou: ' + e.message); }
+};
+$('clear').onclick = () => { lines.length = 0; logEl.textContent = ''; };
+</script>
+</body>
+</html>
