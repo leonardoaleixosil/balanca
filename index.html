@@ -48,6 +48,24 @@ for(let i=0xFE00;i<=0xFFFF;i++) optionalServices.push(uuid16(i));
 [0x1800,0x1801,0x180A,0x180F,0x181B,0x181D,0x1816,0x1814].forEach(n=>optionalServices.push(uuid16(n)));
 
 let device;
+// 0x11C0 = identificador de fabricante visto no anúncio da balança (nRF Connect).
+// Sem declarar aqui, o Chrome esconde os dados de fabricante do anúncio.
+async function pickDevice(){
+  const d = await navigator.bluetooth.requestDevice({
+    acceptAllDevices:true, optionalServices, optionalManufacturerData:[0x11C0]
+  });
+  log('Dispositivo: ' + d.name + ' id=' + d.id);
+  return d;
+}
+
+// Anúncio: C0 11 | peso(2B, big-endian, 0,01 kg) | 13 88 | 00 00 | 25 | MAC(6B)
+function decodeAdv(dv){
+  const b = new Uint8Array(dv.buffer, dv.byteOffset, dv.byteLength);
+  if(b.length < 2) return '';
+  const w = (b[0]<<8 | b[1]) / 100;
+  return ' => peso≈' + w.toFixed(2) + ' kg';
+}
+
 async function connectWithRetry(dev, tries){
   for(let i=1;i<=tries;i++){
     try{
@@ -64,8 +82,7 @@ async function connectWithRetry(dev, tries){
 
 $('btn').onclick = async () => {
   try{
-    device = await navigator.bluetooth.requestDevice({acceptAllDevices:true, optionalServices});
-    log('Dispositivo: ' + device.name + ' id=' + device.id);
+    device = await pickDevice();
     device.addEventListener('gattserverdisconnected', () => log('Desconectado'));
     const server = await connectWithRetry(device, 4);
     log('Conectado ao GATT');
@@ -97,7 +114,7 @@ $('btn').onclick = async () => {
 
 $('adv').onclick = async () => {
   try{
-    if(!device){ log('Conecte (escolha o dispositivo) primeiro.'); return; }
+    if(!device) device = await pickDevice();
     if(!device.watchAdvertisements){
       log('watchAdvertisements indisponível. Ative chrome://flags/#enable-experimental-web-platform-features');
       return;
@@ -107,7 +124,7 @@ $('adv').onclick = async () => {
       // não inclui rssi na comparação: só registra quando o conteúdo muda
       let s = 'name=' + ev.name + ' uuids=[' + (ev.uuids||[]).join(',') + '] tx=' + ev.txPower;
       s += ' mfrN=' + ev.manufacturerData.size + ' svcN=' + ev.serviceData.size;
-      ev.manufacturerData.forEach((v,k)=> s += ' | mfr 0x' + k.toString(16) + ': ' + hex(v));
+      ev.manufacturerData.forEach((v,k)=> s += ' | mfr 0x' + k.toString(16) + ': ' + hex(v) + decodeAdv(v));
       ev.serviceData.forEach((v,k)=> s += ' | svc ' + k + ': ' + hex(v));
       if(s !== lastAdv){ lastAdv = s; log('ADV ' + s + ' rssi=' + ev.rssi); }
     });
